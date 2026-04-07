@@ -313,6 +313,55 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_model(ctx: CommandContext) -> OutboundMessage:
+    """Manage the LLM model for the current session.
+    Usage:
+        /model           — List available models
+        /model <model>   — Switch to a specific model
+    """
+    loop = ctx.loop
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    args = ctx.args.strip()
+
+    if not args:
+        # List models
+        models = await loop.provider.list_models()
+        if models:
+            current = loop.get_effective_model(session)
+            model_list = "\n".join(f"- {'**' + m + '**' if m == current else m}" for m in models)
+            content = f"Available models for {loop.provider.__class__.__name__}:\n\n{model_list}\n\n" \
+                      f"Current model: `{current}`\n\n" \
+                      f"Use `/model <model-name>` to switch."
+        else:
+            content = "Could not fetch available models from provider."
+        
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content=content, metadata={"render_as": "text"}
+        )
+
+    # Set model
+    target_model = args.split()[0]
+    
+    # Validate model existence if possible
+    models = await loop.provider.list_models()
+    if models and target_model not in models:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content=f"Error: Model `{target_model}` not found in provider list. Please check the name and try again.",
+            metadata=dict(ctx.msg.metadata or {})
+        )
+
+    session.metadata["model"] = target_model
+    loop.sessions.save(session)
+    
+    return OutboundMessage(
+        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        content=f"Model switched to `{target_model}` for this session.",
+        metadata=dict(ctx.msg.metadata or {})
+    )
+
+
 def build_help_text() -> str:
     """Build canonical help text shared across channels."""
     lines = [
@@ -321,6 +370,7 @@ def build_help_text() -> str:
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
+        "/model — List or switch LLM model",
         "/dream — Manually trigger Dream consolidation",
         "/dream-log — Show what the last Dream changed",
         "/dream-restore — Revert memory to a previous state",
@@ -336,6 +386,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/status", cmd_status)
     router.exact("/new", cmd_new)
     router.exact("/status", cmd_status)
+    router.exact("/model", cmd_model)
+    router.prefix("/model ", cmd_model)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)

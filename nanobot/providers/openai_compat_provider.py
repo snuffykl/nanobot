@@ -775,3 +775,12 @@ class OpenAICompatProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
+
+    async def list_models(self) -> list[str] | None:
+        """List available models using the OpenAI-compatible /models endpoint."""
+        try:
+            response = await self._client.models.list()
+            return [m.id for m in response.data]
+        except Exception as e:
+            logger.warning("Failed to list models for OpenAI-compatible provider: {}", e)
+            return None

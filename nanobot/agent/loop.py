@@ -316,6 +316,12 @@ class AgentLoop:
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
 
+    def get_effective_model(self, session: Session | None) -> str:
+        """Get the effective model to use, checking for session-specific override."""
+        if session and session.metadata.get("model"):
+            return session.metadata["model"]
+        return self.model
+
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
         """Remove <think>…</think> blocks that some models embed in content."""
@@ -377,7 +383,7 @@ class AgentLoop:
         result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
             tools=self.tools,
-            model=self.model,
+            model=self.get_effective_model(session),
             max_iterations=self.max_iterations,
             max_tool_result_chars=self.max_tool_result_chars,
             hook=hook,

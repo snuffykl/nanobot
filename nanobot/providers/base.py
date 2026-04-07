@@ -98,6 +98,10 @@ class LLMProvider(ABC):
         "server error",
         "temporarily unavailable",
     )
+
+    async def list_models(self) -> list[str] | None:
+        """List available models for this provider. Returns None if unsupported."""
+        return None
     _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
     _TRANSIENT_ERROR_KINDS = frozenset({"timeout", "connection"})
     _NON_RETRYABLE_429_ERROR_TOKENS = frozenset({
