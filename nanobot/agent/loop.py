@@ -389,6 +389,7 @@ class AgentLoop:
             initial_messages=initial_messages,
             tools=self.tools,
             model=self.get_effective_model(session),
+            temperature=session.metadata.get("temperature") if session else None,
             max_iterations=self.max_iterations,
             max_tool_result_chars=self.max_tool_result_chars,
             hook=hook,

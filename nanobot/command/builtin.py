@@ -12,6 +12,8 @@ from nanobot.command.router import CommandContext, CommandRouter
 from nanobot.utils.helpers import build_status_content
 from nanobot.utils.restart import set_restart_notice_to_env
 
+from nanobot.command.builtin_temp import cmd_temp
+
 
 async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
     """Cancel all active tasks and subagents for the session."""
@@ -371,6 +373,7 @@ def build_help_text() -> str:
         "/restart — Restart the bot",
         "/status — Show bot status",
         "/model — List or switch LLM model",
+        "/temp — Set LLM temperature (0.0-2.0)",
         "/dream — Manually trigger Dream consolidation",
         "/dream-log — Show what the last Dream changed",
         "/dream-restore — Revert memory to a previous state",
@@ -388,6 +391,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/status", cmd_status)
     router.exact("/model", cmd_model)
     router.prefix("/model ", cmd_model)
+    router.exact("/temp", cmd_temp)
+    router.prefix("/temp ", cmd_temp)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)
