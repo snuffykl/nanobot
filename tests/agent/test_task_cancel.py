@@ -402,3 +402,128 @@ class TestSubagentCancellation:
         assert cancelled.is_set()
         assert task.cancelled()
         mgr._announce_result.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_tool_propagates_model_override(self):
+        """SpawnTool.set_context(model=...) is forwarded to SubagentManager.spawn."""
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.agent.tools.spawn import SpawnTool
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "default-model"
+        mgr = SubagentManager(
+            provider=provider,
+            workspace=MagicMock(),
+            bus=bus,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        )
+        mgr.spawn = AsyncMock(return_value="ok")
+        tool = SpawnTool(manager=mgr)
+
+        tool.set_context("telegram", "chat-1", model="overridden-model")
+        await tool.execute(task="research something")
+
+        mgr.spawn.assert_awaited_once()
+        call_kwargs = mgr.spawn.call_args
+        assert call_kwargs.kwargs["model"] == "overridden-model"
+        assert call_kwargs.kwargs["origin_channel"] == "telegram"
+        assert call_kwargs.kwargs["origin_chat_id"] == "chat-1"
+
+    @pytest.mark.asyncio
+    async def test_spawn_tool_uses_none_model_when_no_override(self):
+        """SpawnTool passes model=None when set_context is called without model."""
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.agent.tools.spawn import SpawnTool
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "default-model"
+        mgr = SubagentManager(
+            provider=provider,
+            workspace=MagicMock(),
+            bus=bus,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        )
+        mgr.spawn = AsyncMock(return_value="ok")
+        tool = SpawnTool(manager=mgr)
+
+        tool.set_context("cli", "direct")
+        await tool.execute(task="research something")
+
+        mgr.spawn.assert_awaited_once()
+        call_kwargs = mgr.spawn.call_args
+        assert call_kwargs.kwargs["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_subagent_manager_spawn_uses_overridden_model(self, monkeypatch, tmp_path):
+        """SubagentManager.spawn(model=...) overrides self.model in _run_subagent."""
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "default-model"
+        mgr = SubagentManager(
+            provider=provider,
+            workspace=tmp_path,
+            bus=bus,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        )
+        mgr._announce_result = AsyncMock()
+
+        captured_model = {}
+
+        async def fake_run(spec):
+            captured_model["model"] = spec.model
+            return SimpleNamespace(
+                stop_reason="completed",
+                final_content="done",
+                error=None,
+                tool_events=[],
+            )
+
+        mgr.runner.run = AsyncMock(side_effect=fake_run)
+
+        await mgr.spawn(task="research", session_key="test:c1", model="overridden-model")
+        # Give the background task time to complete
+        await asyncio.sleep(0.1)
+
+        assert captured_model.get("model") == "overridden-model"
+
+    @pytest.mark.asyncio
+    async def test_subagent_manager_spawn_falls_back_to_default_model(self, monkeypatch, tmp_path):
+        """SubagentManager.spawn(model=None) falls back to self.model."""
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "default-model"
+        mgr = SubagentManager(
+            provider=provider,
+            workspace=tmp_path,
+            bus=bus,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        )
+        mgr._announce_result = AsyncMock()
+
+        captured_model = {}
+
+        async def fake_run(spec):
+            captured_model["model"] = spec.model
+            return SimpleNamespace(
+                stop_reason="completed",
+                final_content="done",
+                error=None,
+                tool_events=[],
+            )
+
+        mgr.runner.run = AsyncMock(side_effect=fake_run)
+
+        await mgr.spawn(task="research", session_key="test:c1")
+        await asyncio.sleep(0.1)
+
+        assert captured_model.get("model") == "default-model"
