@@ -319,7 +319,8 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
     """Manage the LLM model for the current session.
     Usage:
         /model           — List available models
-        /model <model>   — Switch to a specific model
+        /model <num>    — Switch by number (e.g., /model 1)
+        /model <name>   — Switch by full model name
     """
     loop = ctx.loop
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
@@ -330,33 +331,65 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
         models = await loop.provider.list_models()
         if models:
             current = loop.get_effective_model(session)
-            model_list = "\n".join(f"- {'**' + m + '**' if m == current else m}" for m in models)
+            model_lines = []
+            for i, m in enumerate(models, 1):
+                prefix = "**" if m == current else ""
+                suffix = "**" if m == current else ""
+                model_lines.append(f"{i}. {prefix}{m}{suffix}")
+            model_list = "\n".join(model_lines)
             content = f"Available models for {loop.provider.__class__.__name__}:\n\n{model_list}\n\n" \
                       f"Current model: `{current}`\n\n" \
-                      f"Use `/model <model-name>` to switch."
+                      f"Use `/model <number>` or `/model <name>` to switch."
         else:
             content = "Could not fetch available models from provider."
-        
+
         return OutboundMessage(
-            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-            content=content, metadata={"render_as": "text"}
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={
+                "render_as": "model_list",
+                "models": models,
+                "current_model": current,
+                "provider_name": loop.provider.__class__.__name__,
+            }
         )
 
-    # Set model
-    target_model = args.split()[0]
-    
-    # Validate model existence if possible
+    # Handle model selection
+    target = args.split()[0]
     models = await loop.provider.list_models()
-    if models and target_model not in models:
+
+    if not models:
         return OutboundMessage(
             channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-            content=f"Error: Model `{target_model}` not found in provider list. Please check the name and try again.",
+            content="Could not fetch available models from provider.",
             metadata=dict(ctx.msg.metadata or {})
         )
 
+    # Try to interpret as a number first
+    if target.isdigit():
+        index = int(target) - 1  # Convert to 0-based
+        if 0 <= index < len(models):
+            target_model = models[index]
+        else:
+            return OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                content=f"Invalid model number `{target}`. Please choose 1-{len(models)}.",
+                metadata=dict(ctx.msg.metadata or {})
+            )
+    else:
+        # Treat as full model name
+        if target not in models:
+            return OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                content=f"Model `{target}` not found. Use `/model` to see available models.",
+                metadata=dict(ctx.msg.metadata or {})
+            )
+        target_model = target
+
     session.metadata["model"] = target_model
     loop.sessions.save(session)
-    
+
     return OutboundMessage(
         channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
         content=f"Model switched to `{target_model}` for this session.",
