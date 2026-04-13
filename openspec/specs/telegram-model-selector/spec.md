@@ -1,7 +1,8 @@
 # telegram-model-selector Specification
 
 ## Purpose
-TBD - created by archiving change enhanced-telegram-model-selection. Update Purpose after archive.
+Switch models via Telegram inline keyboard to ease switching models instead of manual typing the model name.
+
 ## Requirements
 ### Requirement: Telegram model selection UI
 The system SHALL provide an interactive inline keyboard for model selection when the `/model` command is invoked in Telegram, showing clickable buttons for each model.

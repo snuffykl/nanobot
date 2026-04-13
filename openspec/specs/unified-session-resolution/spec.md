@@ -1,4 +1,6 @@
 ## ADDED Requirements
+## Purpose
+After switching models feature was introduced, there is a need to unified session context to make sure consistency of the model value being notified or to be aware of.
 
 ### Requirement: Unified Session Context for All Commands
 The system SHALL ensure that all command handlers, including priority commands, receive a `CommandContext` that contains the correctly resolved `Session` object if one exists for the current session key.
