@@ -54,7 +54,7 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     """Build an outbound status message for a session."""
     loop = ctx.loop
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    session = ctx.session
     ctx_est = 0
     try:
         ctx_est, _ = loop.consolidator.estimate_session_prompt_tokens(session)
@@ -80,7 +80,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
-            version=__version__, model=loop.model,
+            version=__version__, model=loop.get_effective_model(session),
             start_time=loop._start_time, last_usage=loop._last_usage,
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(session.get_history(max_messages=0)),
