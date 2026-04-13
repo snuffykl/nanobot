@@ -463,7 +463,7 @@ class AgentLoop:
 
             raw = msg.content.strip()
             if self.commands.is_priority(raw):
-                session = self.sessions.get(msg.session_key)
+                session = self.sessions.get_or_create(msg.session_key)
                 ctx = CommandContext(msg=msg, session=session, key=msg.session_key, raw=raw, loop=self)
                 result = await self.commands.dispatch_priority(ctx)
                 if result:
