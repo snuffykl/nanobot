@@ -103,11 +103,13 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        model: str | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
+        effective_model = model or self.model
 
         status = SubagentStatus(
             task_id=task_id,
@@ -118,7 +120,7 @@ class SubagentManager:
         self._task_statuses[task_id] = status
 
         bg_task = asyncio.create_task(
-            self._run_subagent(task_id, task, display_label, origin, status)
+            self._run_subagent(task_id, task, display_label, origin, effective_model, status)
         )
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -143,9 +145,11 @@ class SubagentManager:
         task: str,
         label: str,
         origin: dict[str, str],
-        status: SubagentStatus,
+        model: str | None = None,
+        status: SubagentStatus | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
+        effective_model = model or self.model
         logger.info("Subagent [{}] starting task: {}", task_id, label)
 
         async def _on_checkpoint(payload: dict) -> None:
@@ -184,7 +188,7 @@ class SubagentManager:
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=messages,
                 tools=tools,
-                model=self.model,
+                model=effective_model,
                 max_iterations=15,
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=_SubagentHook(task_id, status),

@@ -17,7 +17,6 @@ from nanobot.utils.restart import consume_restart_notice_from_env, format_restar
 if TYPE_CHECKING:
     from nanobot.session.manager import SessionManager
 
-
 def _default_webui_dist() -> Path | None:
     """Return the absolute path to the bundled webui dist directory if it exists."""
     try:
@@ -26,6 +25,7 @@ def _default_webui_dist() -> Path | None:
         return None
     candidate = Path(web_pkg.__file__).resolve().parent / "dist"
     return candidate if candidate.is_dir() else None
+
 
 # Retry delays for message sending (exponential backoff: 1s, 2s, 4s)
 _SEND_RETRY_DELAYS = (1, 2, 4)
@@ -88,6 +88,7 @@ class ChannelManager:
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key
                 channel.transcription_api_base = transcription_base
+                channel.session_manager = self._session_manager
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except Exception as e:

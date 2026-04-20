@@ -763,8 +763,6 @@ def _run_gateway(
 
     cron.on_job = on_cron_job
 
-    # Create channel manager (forwards SessionManager so the WebSocket channel
-    # can serve the embedded webui's REST surface).
     channels = ChannelManager(config, bus, session_manager=session_manager)
 
     def _pick_heartbeat_target() -> tuple[str, str]:

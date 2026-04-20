@@ -316,12 +316,23 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None, session: Session | None = None) -> None:
         """Update context for all tools that need routing info."""
         for name in ("message", "spawn", "cron", "my"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    extra_args = []
+                    if name == "message":
+                        extra_args.append(message_id)
+                    elif name == "spawn" and session is not None:
+                        extra_args.append(self.get_effective_model(session))
+                    tool.set_context(channel, chat_id, *extra_args)
+
+    def get_effective_model(self, session: Session | None) -> str:
+        """Get the effective model to use, checking for session-specific override."""
+        if session and session.metadata.get("model"):
+            return session.metadata["model"]
+        return self.model
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -417,7 +428,8 @@ class AgentLoop:
         result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
             tools=self.tools,
-            model=self.model,
+            model=self.get_effective_model(session),
+            temperature=session.metadata.get("temperature") if session else None,
             max_iterations=self.max_iterations,
             max_tool_result_chars=self.max_tool_result_chars,
             hook=hook,
@@ -472,7 +484,8 @@ class AgentLoop:
 
             raw = msg.content.strip()
             if self.commands.is_priority(raw):
-                ctx = CommandContext(msg=msg, session=None, key=msg.session_key, raw=raw, loop=self)
+                session = self.sessions.get_or_create(msg.session_key)
+                ctx = CommandContext(msg=msg, session=session, key=msg.session_key, raw=raw, loop=self)
                 result = await self.commands.dispatch_priority(ctx)
                 if result:
                     await self.bus.publish_outbound(result)
@@ -652,15 +665,10 @@ class AgentLoop:
                 session,
                 session_summary=pending,
             )
-            # Persist subagent follow-ups into durable history BEFORE prompt
-            # assembly. ContextBuilder merges adjacent same-role messages for
-            # provider compatibility, which previously caused the follow-up to
-            # disappear from session.messages while still being visible to the
-            # LLM via the merged prompt. See _persist_subagent_followup.
             is_subagent = msg.sender_id == "subagent"
             if is_subagent and self._persist_subagent_followup(session, msg):
                 self.sessions.save(session)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"), session)
             history = session.get_history(max_messages=0)
             current_role = "assistant" if is_subagent else "user"
 
@@ -717,7 +725,7 @@ class AgentLoop:
             session_summary=pending,
         )
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"), session)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()

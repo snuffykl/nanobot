@@ -12,6 +12,8 @@ from nanobot.command.router import CommandContext, CommandRouter
 from nanobot.utils.helpers import build_status_content
 from nanobot.utils.restart import set_restart_notice_to_env
 
+from nanobot.command.builtin_temp import cmd_temp
+
 
 async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
     """Cancel all active tasks and subagents for the session."""
@@ -52,7 +54,7 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     """Build an outbound status message for a session."""
     loop = ctx.loop
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    session = ctx.session
     ctx_est = 0
     try:
         ctx_est, _ = loop.consolidator.estimate_session_prompt_tokens(session)
@@ -84,7 +86,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
-            version=__version__, model=loop.model,
+            version=__version__, model=loop.get_effective_model(session),
             start_time=loop._start_time, last_usage=loop._last_usage,
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(session.get_history(max_messages=0)),
@@ -323,6 +325,88 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_model(ctx: CommandContext) -> OutboundMessage:
+    """Manage the LLM model for the current session.
+    Usage:
+        /model           — List available models
+        /model <num>    — Switch by number (e.g., /model 1)
+        /model <name>   — Switch by full model name
+    """
+    loop = ctx.loop
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    args = ctx.args.strip()
+
+    if not args:
+        # List models
+        models = await loop.provider.list_models()
+        if models:
+            current = loop.get_effective_model(session)
+            model_lines = []
+            for i, m in enumerate(models, 1):
+                prefix = "**" if m == current else ""
+                suffix = "**" if m == current else ""
+                model_lines.append(f"{i}. {prefix}{m}{suffix}")
+            model_list = "\n".join(model_lines)
+            content = f"Available models for {loop.provider.__class__.__name__}:\n\n{model_list}\n\n" \
+                      f"Current model: `{current}`\n\n" \
+                      f"Use `/model <number>` or `/model <name>` to switch."
+        else:
+            content = "Could not fetch available models from provider."
+
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={
+                "render_as": "model_list",
+                "models": models,
+                "current_model": current,
+                "provider_name": loop.provider.__class__.__name__,
+            }
+        )
+
+    # Handle model selection
+    target = args.split()[0]
+    models = await loop.provider.list_models()
+
+    if not models:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content="Could not fetch available models from provider.",
+            metadata=dict(ctx.msg.metadata or {})
+        )
+
+    # Try to interpret as a number first
+    if target.isdigit():
+        index = int(target) - 1  # Convert to 0-based
+        if 0 <= index < len(models):
+            target_model = models[index]
+        else:
+            return OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                content=f"Invalid model number `{target}`. Please choose 1-{len(models)}.",
+                metadata=dict(ctx.msg.metadata or {})
+            )
+    else:
+        # Treat as full model name
+        if target not in models:
+            return OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                content=f"Model `{target}` not found. Use `/model` to see available models.",
+                metadata=dict(ctx.msg.metadata or {})
+            )
+        target_model = target
+
+    session.metadata["model"] = target_model
+    loop.sessions.save(session)
+
+    return OutboundMessage(
+        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        content=f"Model switched to `{target_model}` for this session.",
+        metadata=dict(ctx.msg.metadata or {})
+    )
+
+
 def build_help_text() -> str:
     """Build canonical help text shared across channels."""
     lines = [
@@ -331,6 +415,8 @@ def build_help_text() -> str:
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
+        "/model — List or switch LLM model",
+        "/temp — Set LLM temperature (0.0-2.0)",
         "/dream — Manually trigger Dream consolidation",
         "/dream-log — Show what the last Dream changed",
         "/dream-restore — Revert memory to a previous state",
@@ -346,6 +432,10 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/status", cmd_status)
     router.exact("/new", cmd_new)
     router.exact("/status", cmd_status)
+    router.exact("/model", cmd_model)
+    router.prefix("/model ", cmd_model)
+    router.exact("/temp", cmd_temp)
+    router.prefix("/temp ", cmd_temp)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)

@@ -11,9 +11,9 @@ from typing import Any, Literal
 
 from loguru import logger
 from pydantic import Field
-from telegram import BotCommand, ReactionTypeEmoji, ReplyParameters, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.error import BadRequest, NetworkError, TimedOut
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
@@ -27,6 +27,7 @@ from nanobot.utils.helpers import split_message
 
 TELEGRAM_MAX_MESSAGE_LEN = 4000  # Telegram message character limit
 TELEGRAM_REPLY_CONTEXT_MAX_LEN = TELEGRAM_MAX_MESSAGE_LEN  # Max length for reply context in user message
+MAX_DISPLAY_NAME_LEN = 40  # Maximum characters for model name in button text
 
 
 def _escape_telegram_html(text: str) -> str:
@@ -78,6 +79,37 @@ def _render_table_box(table_lines: list[str]) -> str:
     for row in rows[1:]:
         out.append(dr(row))
     return '\n'.join(out)
+
+
+def _format_model_display_name(name: str) -> str:
+    """Truncate long model names for button display."""
+    if len(name) <= MAX_DISPLAY_NAME_LEN:
+        return name
+    return name[:MAX_DISPLAY_NAME_LEN - 3] + "..."
+
+
+def build_model_keyboard(models: list[str], current_model: str | None) -> InlineKeyboardMarkup:
+    """Build an inline keyboard for model selection.
+
+    Args:
+        models: List of available model names.
+        current_model: The currently selected model (if any).
+
+    Returns:
+        InlineKeyboardMarkup with buttons for each model.
+    """
+    if not models:
+        return InlineKeyboardMarkup([])
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    for i, model in enumerate(models, 1):
+        prefix = "✅ " if model == current_model else "📋 "
+        display_name = _format_model_display_name(model)
+        button_text = f"{prefix}{i}. {display_name}"
+        keyboard.append([InlineKeyboardButton(text=button_text, callback_data=f"model:{i}")])
+
+    return InlineKeyboardMarkup(keyboard)
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -212,6 +244,8 @@ class TelegramChannel(BaseChannel):
         BotCommand("restart", "Restart the bot"),
         BotCommand("status", "Show bot status"),
         BotCommand("dream", "Run Dream memory consolidation now"),
+        BotCommand("model", "List or switch LLM model"),
+        BotCommand("temp", "Set LLM temperature (0.0 - 2.0)"),
         BotCommand("dream_log", "Show the latest Dream memory change"),
         BotCommand("dream_restore", "Restore Dream memory to an earlier version"),
         BotCommand("help", "Show available commands"),
@@ -235,6 +269,7 @@ class TelegramChannel(BaseChannel):
         self._bot_user_id: int | None = None
         self._bot_username: str | None = None
         self._stream_bufs: dict[str, _StreamBuf] = {}  # chat_id -> streaming state
+        self._model_keyboards: dict[str, int] = {}  # chat_id -> message_id for model keyboard
 
     def is_allowed(self, sender_id: str) -> bool:
         """Preserve Telegram's legacy id|username allowlist matching."""
@@ -304,7 +339,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(MessageHandler(filters.Regex(r"^/start(?:@\w+)?$"), self._on_start))
         self._app.add_handler(
             MessageHandler(
-                filters.Regex(r"^/(new|stop|restart|status|dream)(?:@\w+)?(?:\s+.*)?$"),
+                filters.Regex(r"^/(new|stop|restart|status|dream|model|temp)(?:@\w+)?(?:\s+.*)?$"),
                 self._forward_command,
             )
         )
@@ -324,6 +359,9 @@ class TelegramChannel(BaseChannel):
                 self._on_message
             )
         )
+
+        # Add callback query handler for inline keyboard interactions
+        self._app.add_handler(CallbackQueryHandler(self._on_callback, pattern=r"^model:"))
 
         logger.info("Starting Telegram bot (polling mode)...")
 
@@ -345,7 +383,7 @@ class TelegramChannel(BaseChannel):
 
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=False,  # Process pending messages on startup
             error_callback=self._on_polling_error,
         )
@@ -476,6 +514,31 @@ class TelegramChannel(BaseChannel):
                     chat_id, chunk, reply_params, thread_kwargs,
                     render_as_blockquote=render_as_blockquote,
                 )
+
+        # Handle model list with inline keyboard
+        if msg.metadata.get("render_as") == "model_list":
+            models = msg.metadata.get("models", [])
+            current_model = msg.metadata.get("current_model")
+            if models:
+                keyboard = build_model_keyboard(models, current_model)
+                try:
+                    sent = await self._call_with_retry(
+                        self._app.bot.send_message,
+                        chat_id=chat_id,
+                        text="Select a model:",
+                        reply_markup=keyboard,
+                        **thread_kwargs,
+                    )
+                    # Store message ID and models list for callback handling
+                    if sent:
+                        self._model_keyboards[str(chat_id)] = sent.message_id
+                        if self.session_manager:
+                            session_key = f"telegram:{chat_id}"
+                            session = self.session_manager.get_or_create(session_key)
+                            session.metadata["_model_list"] = models
+                            self.session_manager.save(session)
+                except Exception as e:
+                    logger.error("Failed to send model keyboard: {}", e)
 
     async def _call_with_retry(self, fn, *args, **kwargs):
         """Call an async Telegram API function with retry on pool/network timeout and RetryAfter."""
@@ -1022,6 +1085,75 @@ class TelegramChannel(BaseChannel):
             pass
         except Exception as e:
             logger.debug("Typing indicator stopped for {}: {}", chat_id, e)
+
+    async def _on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard callback queries (e.g., model selection)."""
+        try:
+            query = update.callback_query
+            if not query or not query.data:
+                return
+
+            # Parse callback_data: "model:<number>"
+            if not query.data.startswith("model:"):
+                return
+
+            try:
+                model_index = int(query.data[len("model:"):]) - 1  # Convert to 0-based
+            except ValueError:
+                return
+
+            chat_id = str(query.message.chat_id) if query.message else None
+            if not chat_id:
+                return
+
+            # Acknowledge the callback immediately
+            await query.answer()
+
+            # Get session and update model
+            if self.session_manager:
+                session_key = f"telegram:{chat_id}"
+                session = self.session_manager.get_or_create(session_key)
+                models = session.metadata.get("_model_list", [])
+
+                if not models or model_index < 0 or model_index >= len(models):
+                    if query.message:
+                        await context.bot.send_message(
+                            chat_id=query.message.chat_id,
+                            text="❌ Invalid model selection. Please use /model again."
+                        )
+                    return
+
+                target_model = models[model_index]
+                current_model = session.metadata.get("model")
+
+                if current_model == target_model:
+                    if query.message:
+                        await context.bot.send_message(
+                            chat_id=query.message.chat_id,
+                            text=f"ℹ️ Model `{target_model}` is already selected."
+                        )
+                    return
+
+                # Update session model
+                session.metadata["model"] = target_model
+                session.metadata.pop("_model_list", None)
+                self.session_manager.save(session)
+                self._model_keyboards.pop(chat_id, None)
+
+                if query.message:
+                    await context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=f"✅ Switched to `{target_model}`"
+                    )
+            else:
+                logger.warning("Telegram callback: no session_manager available")
+                if query.message:
+                    await context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text="❌ Session manager not available."
+                    )
+        except Exception as e:
+            logger.exception("Error in _on_callback: {}", e)
 
     @staticmethod
     def _format_telegram_error(exc: Exception) -> str:
